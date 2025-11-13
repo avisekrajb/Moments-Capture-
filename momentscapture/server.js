@@ -1,5 +1,3 @@
-require('dotenv').config();
-
 const express = require('express');
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
@@ -8,16 +6,16 @@ const nodemailer = require('nodemailer');
 const multer = require('multer');
 const path = require('path');
 const cors = require('cors');
-const fs = require('fs');
+require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const JWT_SECRET = process.env.JWT_SECRET || 'photographer_app_secret_key_2024';
 
-// Environment variables for production
+// Environment variables
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/photographer_app';
+const JWT_SECRET = process.env.JWT_SECRET || 'photographer_app_secret_key_2024';
 const EMAIL_USER = process.env.EMAIL_USER || 'abhishekrajbanshi999@gmail.com';
-const EMAIL_PASS = process.env.EMAIL_PASS || 'krfotyhksoxsoynf';
+const EMAIL_PASS = process.env.EMAIL_PASS || 'your_app_password_here';
 
 // Middleware
 app.use(cors());
@@ -25,27 +23,40 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static('public'));
 
-// MongoDB Connection with better error handling
+// MongoDB Connection
+console.log('🔗 Connecting to MongoDB Atlas...');
+
 mongoose.connect(MONGODB_URI, {
     useNewUrlParser: true,
     useUnifiedTopology: true,
 })
 .then(() => {
-    console.log('Connected to MongoDB Atlas');
+    console.log('✅ Connected to MongoDB Atlas successfully');
 })
 .catch(err => {
-    console.error('MongoDB connection error:', err);
+    console.error('❌ MongoDB connection failed:', err);
     process.exit(1);
 });
 
-// MongoDB Schemas
+// ==================== MONGODB SCHEMAS ====================
+
+// Store images/files as buffers in MongoDB
+const imageSchema = new mongoose.Schema({
+    filename: { type: String, required: true },
+    originalName: { type: String, required: true },
+    mimeType: { type: String, required: true },
+    buffer: { type: Buffer, required: true }, // Store file content
+    size: { type: Number, required: true },
+    uploadDate: { type: Date, default: Date.now }
+});
+
 const userSchema = new mongoose.Schema({
     fullName: { type: String, required: true },
     email: { type: String, required: true, unique: true },
     password: { type: String, required: true },
     address: { type: String, required: true },
     phone: { type: String, required: true },
-    profilePhoto: { type: String },
+    profilePhoto: { type: mongoose.Schema.Types.ObjectId, ref: 'Image' }, // Reference to image
     role: { type: String, default: 'user' },
     createdAt: { type: Date, default: Date.now }
 });
@@ -74,7 +85,7 @@ const contactSchema = new mongoose.Schema({
 });
 
 const carouselSchema = new mongoose.Schema({
-    image: { type: String, required: true },
+    image: { type: mongoose.Schema.Types.ObjectId, ref: 'Image', required: true }, // Reference to image
     title: { type: String, required: true },
     description: { type: String, required: true },
     createdAt: { type: Date, default: Date.now }
@@ -84,7 +95,7 @@ const serviceSchema = new mongoose.Schema({
     name: { type: String, required: true },
     description: { type: String, required: true },
     price: { type: Number, required: true },
-    image: { type: String },
+    image: { type: mongoose.Schema.Types.ObjectId, ref: 'Image' }, // Reference to image
     isNew: { type: Boolean, default: true },
     createdAt: { type: Date, default: Date.now }
 });
@@ -94,44 +105,86 @@ const visitSchema = new mongoose.Schema({
     lastUpdated: { type: Date, default: Date.now }
 });
 
+const portfolioSchema = new mongoose.Schema({
+    title: { type: String, required: true },
+    description: { type: String, required: true },
+    category: { type: String, required: true },
+    image: { type: mongoose.Schema.Types.ObjectId, ref: 'Image', required: true }, // Reference to image
+    type: { type: String, enum: ['photo', 'video'], default: 'photo' },
+    likes: { type: Number, default: 0 },
+    createdAt: { type: Date, default: Date.now }
+});
+
 // MongoDB Models
+const Image = mongoose.model('Image', imageSchema);
 const User = mongoose.model('User', userSchema);
 const Booking = mongoose.model('Booking', bookingSchema);
 const Contact = mongoose.model('Contact', contactSchema);
 const Carousel = mongoose.model('Carousel', carouselSchema);
 const Service = mongoose.model('Service', serviceSchema);
 const Visit = mongoose.model('Visit', visitSchema);
+const Portfolio = mongoose.model('Portfolio', portfolioSchema);
 
-// File upload configuration
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        const uploadDir = 'public/uploads/';
-        if (!fs.existsSync(uploadDir)) {
-            fs.mkdirSync(uploadDir, { recursive: true });
-        }
-        cb(null, uploadDir);
-    },
-    filename: (req, file, cb) => {
-        cb(null, Date.now() + '-' + file.originalname);
-    }
-});
+// ==================== FILE STORAGE IN MONGODB ====================
 
+// Store files in memory (will be saved to MongoDB)
+const storage = multer.memoryStorage();
 const upload = multer({ 
     storage: storage,
     fileFilter: (req, file, cb) => {
-        if (file.mimetype.startsWith('image/')) {
+        if (file.mimetype.startsWith('image/') || file.mimetype.startsWith('video/')) {
             cb(null, true);
         } else {
-            cb(new Error('Only image files are allowed!'), false);
+            cb(new Error('Only image and video files are allowed!'), false);
         }
     },
     limits: {
-        fileSize: 5 * 1024 * 1024 // 5MB limit
+        fileSize: 10 * 1024 * 1024 // 10MB limit
+    }
+});
+
+// ==================== UTILITY FUNCTIONS ====================
+
+// Save image to MongoDB
+const saveImageToDB = async (file) => {
+    const image = new Image({
+        filename: `${Date.now()}-${file.originalname}`,
+        originalName: file.originalname,
+        mimeType: file.mimetype,
+        buffer: file.buffer,
+        size: file.size
+    });
+    
+    return await image.save();
+};
+
+// Get image URL
+const getImageUrl = (imageId) => {
+    return `/api/images/${imageId}`;
+};
+
+// Serve image from MongoDB
+app.get('/api/images/:id', async (req, res) => {
+    try {
+        const image = await Image.findById(req.params.id);
+        
+        if (!image) {
+            return res.status(404).json({ error: 'Image not found' });
+        }
+
+        res.setHeader('Content-Type', image.mimeType);
+        res.setHeader('Content-Length', image.size);
+        res.setHeader('Content-Disposition', `inline; filename="${image.originalName}"`);
+        
+        res.send(image.buffer);
+    } catch (error) {
+        console.error('Error serving image:', error);
+        res.status(500).json({ error: 'Failed to serve image' });
     }
 });
 
 // Email transporter configuration
-const transporter = nodemailer.createTransport({
+const transporter = nodemailer.createTransporter({
     service: 'gmail',
     auth: {
         user: EMAIL_USER,
@@ -165,7 +218,7 @@ const requireAdmin = (req, res, next) => {
     next();
 };
 
-// User middleware (prevent admin from accessing user features)
+// User middleware
 const requireUser = (req, res, next) => {
     if (req.user.role === 'admin') {
         return res.status(403).json({ error: 'Admin cannot access user features' });
@@ -191,7 +244,8 @@ const countVisit = async (req, res, next) => {
     }
 };
 
-// Initialize admin user and default services
+// ==================== INITIALIZE DATA ====================
+
 const initializeData = async () => {
     try {
         // Create admin user
@@ -206,7 +260,7 @@ const initializeData = async () => {
                 phone: '0000000000',
                 role: 'admin'
             });
-            console.log('Admin user created: a@gmail.com / 12345');
+            console.log('👑 Admin user created: a@gmail.com / 12345');
         }
 
         // Create default services
@@ -215,28 +269,24 @@ const initializeData = async () => {
                 name: 'Wedding Photography',
                 description: 'Full day coverage with 2 photographers',
                 price: 500,
-                image: '/uploads/wedding.jpg',
                 isNew: false
             },
             {
                 name: 'Photo Shoots',
                 description: '2-hour professional photo session',
                 price: 200,
-                image: '/uploads/portrait.jpg',
                 isNew: false
             },
             {
                 name: 'Program Events',
                 description: 'Event coverage up to 4 hours',
                 price: 300,
-                image: '/uploads/event.jpg',
                 isNew: false
             },
             {
                 name: 'Sponsorship Events',
                 description: 'Corporate event photography',
                 price: 150,
-                image: '/uploads/corporate.jpg',
                 isNew: false
             }
         ];
@@ -248,25 +298,21 @@ const initializeData = async () => {
             }
         }
 
-        // Create default carousel images
+        // Create default carousel images (using placeholder URLs)
         const defaultCarousel = [
             {
-                image: 'https://images.unsplash.com/photo-1542038784456-1ea8e935640e?ixlib=rb-1.2.1&auto=format&fit=crop&w=1350&q=80',
                 title: 'Wedding Photography',
                 description: 'Capture your special day with our professional wedding photography services'
             },
             {
-                image: 'https://images.unsplash.com/photo-1511895426328-dc8714191300?ixlib=rb-1.2.1&auto=format&fit=crop&w=1350&q=80',
                 title: 'Portrait Sessions',
                 description: 'Professional portrait photography for individuals and families'
             },
             {
-                image: 'https://images.unsplash.com/photo-1521334884684-d80222895322?ixlib=rb-1.2.1&auto=format&fit=crop&w=1350&q=80',
                 title: 'Event Photography',
                 description: 'Document your corporate events, parties, and special occasions'
             },
             {
-                image: 'https://images.unsplash.com/photo-1516035069371-29a1b244cc32?ixlib=rb-1.2.1&auto=format&fit=crop&w=1350&q=80',
                 title: 'Commercial Photography',
                 description: 'High-quality product and commercial photography for businesses'
             }
@@ -274,8 +320,11 @@ const initializeData = async () => {
 
         const carouselCount = await Carousel.countDocuments();
         if (carouselCount === 0) {
-            await Carousel.insertMany(defaultCarousel);
-            console.log('Default carousel images created');
+            // Create carousel without images initially
+            for (const carouselData of defaultCarousel) {
+                await Carousel.create(carouselData);
+            }
+            console.log('🖼️ Default carousel created (add images through admin panel)');
         }
 
         // Initialize visit counter
@@ -284,20 +333,41 @@ const initializeData = async () => {
             await Visit.create({ count: 0 });
         }
 
-        console.log('Default data initialized successfully');
+        console.log('✅ Default data initialized successfully');
     } catch (error) {
-        console.error('Error initializing data:', error);
+        console.error('❌ Error initializing data:', error);
     }
 };
 
-// Routes
+// ==================== ROUTES ====================
+
+// Health check
+app.get('/api/health', async (req, res) => {
+    try {
+        const dbStatus = mongoose.connection.readyState === 1 ? 'connected' : 'disconnected';
+        const userCount = await User.countDocuments();
+        const bookingCount = await Booking.countDocuments();
+        const serviceCount = await Service.countDocuments();
+        const imageCount = await Image.countDocuments();
+        
+        res.json({
+            status: 'OK',
+            database: dbStatus,
+            users: userCount,
+            bookings: bookingCount,
+            services: serviceCount,
+            images: imageCount,
+            storage: 'MongoDB Atlas (Permanent)'
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
 
 // Serve main application with visit counting
 app.get('/', countVisit, (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
-
-// API Routes
 
 // Get visit count
 app.get('/api/visits', async (req, res) => {
@@ -386,7 +456,7 @@ app.post('/api/register', async (req, res) => {
                     </div>
                 `
             });
-            console.log('Welcome email sent to:', email);
+            console.log('📧 Welcome email sent to:', email);
         } catch (emailError) {
             console.error('Failed to send welcome email:', emailError);
         }
@@ -433,6 +503,12 @@ app.post('/api/login', async (req, res) => {
             { expiresIn: '24h' }
         );
 
+        // Get profile photo URL if exists
+        let profilePhotoUrl = null;
+        if (user.profilePhoto) {
+            profilePhotoUrl = getImageUrl(user.profilePhoto);
+        }
+
         res.json({
             message: 'Login successful',
             token,
@@ -441,7 +517,7 @@ app.post('/api/login', async (req, res) => {
                 fullName: user.fullName,
                 email: user.email,
                 role: user.role,
-                profilePhoto: user.profilePhoto
+                profilePhoto: profilePhotoUrl
             }
         });
     } catch (error) {
@@ -453,34 +529,42 @@ app.post('/api/login', async (req, res) => {
 // Get user profile
 app.get('/api/profile', authenticateToken, async (req, res) => {
     try {
-        const user = await User.findById(req.user.id).select('-password');
+        const user = await User.findById(req.user.id)
+            .select('-password')
+            .populate('profilePhoto');
+        
         if (!user) {
             return res.status(404).json({ error: 'User not found' });
         }
 
-        res.json(user);
+        // Convert to response format
+        const userResponse = user.toObject();
+        if (user.profilePhoto) {
+            userResponse.profilePhoto = getImageUrl(user.profilePhoto._id);
+        }
+
+        res.json(userResponse);
     } catch (error) {
         console.error('Profile error:', error);
         res.status(500).json({ error: 'Internal server error' });
     }
 });
 
-// Update user profile
+// Update user profile with photo
 app.put('/api/profile', authenticateToken, requireUser, upload.single('profilePhoto'), async (req, res) => {
     try {
         const { fullName, address, phone } = req.body;
         const updateData = { fullName, address, phone };
         
         if (req.file) {
-            updateData.profilePhoto = '/uploads/' + req.file.filename;
+            // Save new profile photo to MongoDB
+            const savedImage = await saveImageToDB(req.file);
+            updateData.profilePhoto = savedImage._id;
             
             // Delete old profile photo if exists
             const oldUser = await User.findById(req.user.id);
-            if (oldUser.profilePhoto && oldUser.profilePhoto.startsWith('/uploads/')) {
-                const oldPhotoPath = path.join(__dirname, 'public', oldUser.profilePhoto);
-                if (fs.existsSync(oldPhotoPath)) {
-                    fs.unlinkSync(oldPhotoPath);
-                }
+            if (oldUser.profilePhoto) {
+                await Image.findByIdAndDelete(oldUser.profilePhoto);
             }
         }
 
@@ -488,15 +572,21 @@ app.put('/api/profile', authenticateToken, requireUser, upload.single('profilePh
             req.user.id,
             updateData,
             { new: true }
-        ).select('-password');
+        ).select('-password').populate('profilePhoto');
 
         if (!updatedUser) {
             return res.status(404).json({ error: 'User not found' });
         }
 
+        // Convert to response format
+        const userResponse = updatedUser.toObject();
+        if (updatedUser.profilePhoto) {
+            userResponse.profilePhoto = getImageUrl(updatedUser.profilePhoto._id);
+        }
+
         res.json({ 
             message: 'Profile updated successfully',
-            user: updatedUser
+            user: userResponse
         });
     } catch (error) {
         console.error('Profile update error:', error);
@@ -547,7 +637,7 @@ app.post('/api/contact', authenticateToken, requireUser, async (req, res) => {
                     </div>
                 `
             });
-            console.log('Contact confirmation email sent to:', email);
+            console.log('📧 Contact confirmation email sent to:', email);
         } catch (emailError) {
             console.error('Failed to send contact confirmation email:', emailError);
         }
@@ -616,7 +706,7 @@ app.post('/api/bookings', authenticateToken, requireUser, async (req, res) => {
                     </div>
                 `
             });
-            console.log('Booking confirmation email sent to:', user.email);
+            console.log('📧 Booking confirmation email sent to:', user.email);
         } catch (emailError) {
             console.error('Failed to send booking confirmation email:', emailError);
         }
@@ -703,8 +793,20 @@ app.get('/api/services', async (req, res) => {
             { $set: { isNew: false } }
         );
 
-        const services = await Service.find().sort({ isNew: -1, createdAt: -1 });
-        res.json(services);
+        const services = await Service.find()
+            .populate('image')
+            .sort({ isNew: -1, createdAt: -1 });
+
+        // Convert to response format with image URLs
+        const servicesWithUrls = services.map(service => {
+            const serviceObj = service.toObject();
+            if (service.image) {
+                serviceObj.image = getImageUrl(service.image._id);
+            }
+            return serviceObj;
+        });
+
+        res.json(servicesWithUrls);
     } catch (error) {
         console.error('Services error:', error);
         res.status(500).json({ error: 'Internal server error' });
@@ -714,15 +816,28 @@ app.get('/api/services', async (req, res) => {
 // Get carousel images
 app.get('/api/carousel', async (req, res) => {
     try {
-        const images = await Carousel.find().sort({ createdAt: -1 }).limit(4);
-        res.json(images);
+        const images = await Carousel.find()
+            .populate('image')
+            .sort({ createdAt: -1 })
+            .limit(4);
+
+        // Convert to response format with image URLs
+        const carouselWithUrls = images.map(item => {
+            const itemObj = item.toObject();
+            if (item.image) {
+                itemObj.image = getImageUrl(item.image._id);
+            }
+            return itemObj;
+        });
+
+        res.json(carouselWithUrls);
     } catch (error) {
         console.error('Carousel error:', error);
         res.status(500).json({ error: 'Internal server error' });
     }
 });
 
-// Admin Routes
+// ==================== ADMIN ROUTES ====================
 
 // Get all bookings (admin only)
 app.get('/api/admin/bookings', authenticateToken, requireAdmin, async (req, res) => {
@@ -801,7 +916,7 @@ app.put('/api/admin/bookings/:id', authenticateToken, requireAdmin, async (req, 
                     </div>
                 `
             });
-            console.log('Booking status update email sent to:', booking.userId.email);
+            console.log('📧 Booking status update email sent to:', booking.userId.email);
         } catch (emailError) {
             console.error('Failed to send status update email:', emailError);
         }
@@ -886,11 +1001,8 @@ app.delete('/api/admin/users/:id', authenticateToken, requireAdmin, async (req, 
         await Contact.deleteMany({ userId: req.params.id });
 
         // Delete user's profile photo if exists
-        if (user.profilePhoto && user.profilePhoto.startsWith('/uploads/')) {
-            const photoPath = path.join(__dirname, 'public', user.profilePhoto);
-            if (fs.existsSync(photoPath)) {
-                fs.unlinkSync(photoPath);
-            }
+        if (user.profilePhoto) {
+            await Image.findByIdAndDelete(user.profilePhoto);
         }
 
         res.json({ message: 'User deleted successfully' });
@@ -959,7 +1071,7 @@ app.put('/api/admin/messages/:id', authenticateToken, requireAdmin, async (req, 
                         </div>
                     `
                 });
-                console.log('Reply email sent to:', message.email);
+                console.log('📧 Reply email sent to:', message.email);
             } catch (emailError) {
                 console.error('Failed to send reply email:', emailError);
             }
@@ -989,15 +1101,23 @@ app.post('/api/admin/carousel', authenticateToken, requireAdmin, upload.single('
 
         const { title, description } = req.body;
 
+        // Save image to MongoDB
+        const savedImage = await saveImageToDB(req.file);
+
         const newImage = await Carousel.create({
-            image: '/uploads/' + req.file.filename,
+            image: savedImage._id,
             title: title || 'New Carousel Image',
             description: description || 'Carousel image description'
         });
 
         res.status(201).json({ 
             message: 'Carousel image added successfully',
-            image: newImage
+            image: {
+                _id: newImage._id,
+                title: newImage.title,
+                description: newImage.description,
+                image: getImageUrl(savedImage._id)
+            }
         });
     } catch (error) {
         console.error('Carousel image upload error:', error);
@@ -1008,18 +1128,17 @@ app.post('/api/admin/carousel', authenticateToken, requireAdmin, upload.single('
 // Delete carousel image (admin only)
 app.delete('/api/admin/carousel/:id', authenticateToken, requireAdmin, async (req, res) => {
     try {
-        const image = await Carousel.findByIdAndDelete(req.params.id);
-        if (!image) {
-            return res.status(404).json({ error: 'Image not found' });
+        const carouselItem = await Carousel.findById(req.params.id);
+        if (!carouselItem) {
+            return res.status(404).json({ error: 'Carousel item not found' });
         }
 
-        // Delete file from filesystem if it's not a default URL
-        if (image.image.startsWith('/uploads/')) {
-            const imagePath = path.join(__dirname, 'public', image.image);
-            if (fs.existsSync(imagePath)) {
-                fs.unlinkSync(imagePath);
-            }
+        // Delete the associated image
+        if (carouselItem.image) {
+            await Image.findByIdAndDelete(carouselItem.image);
         }
+
+        await Carousel.findByIdAndDelete(req.params.id);
 
         res.json({ message: 'Carousel image deleted successfully' });
     } catch (error) {
@@ -1051,14 +1170,23 @@ app.post('/api/admin/services', authenticateToken, requireAdmin, upload.single('
         };
 
         if (req.file) {
-            serviceData.image = '/uploads/' + req.file.filename;
+            // Save image to MongoDB
+            const savedImage = await saveImageToDB(req.file);
+            serviceData.image = savedImage._id;
         }
 
         const newService = await Service.create(serviceData);
 
         res.status(201).json({ 
             message: 'Service added successfully',
-            service: newService
+            service: {
+                _id: newService._id,
+                name: newService.name,
+                description: newService.description,
+                price: newService.price,
+                isNew: newService.isNew,
+                image: newService.image ? getImageUrl(newService.image) : null
+            }
         });
     } catch (error) {
         console.error('Service creation error:', error);
@@ -1066,21 +1194,89 @@ app.post('/api/admin/services', authenticateToken, requireAdmin, upload.single('
     }
 });
 
-// Delete service (admin only)
-app.delete('/api/admin/services/:id', authenticateToken, requireAdmin, async (req, res) => {
+// Get single service (admin only)
+app.get('/api/admin/services/:id', authenticateToken, requireAdmin, async (req, res) => {
     try {
-        const service = await Service.findByIdAndDelete(req.params.id);
+        const service = await Service.findById(req.params.id).populate('image');
         if (!service) {
             return res.status(404).json({ error: 'Service not found' });
         }
 
-        // Delete image file if exists and it's not a default image
-        if (service.image && service.image.startsWith('/uploads/')) {
-            const imagePath = path.join(__dirname, 'public', service.image);
-            if (fs.existsSync(imagePath)) {
-                fs.unlinkSync(imagePath);
+        const serviceObj = service.toObject();
+        if (service.image) {
+            serviceObj.image = getImageUrl(service.image._id);
+        }
+
+        res.json(serviceObj);
+    } catch (error) {
+        console.error('Get service error:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// Update service (admin only)
+app.put('/api/admin/services/:id', authenticateToken, requireAdmin, upload.single('image'), async (req, res) => {
+    try {
+        const { name, description, price, isNew } = req.body;
+        
+        const updateData = {
+            name,
+            description,
+            price: parseFloat(price),
+            isNew: isNew === 'true'
+        };
+        
+        if (req.file) {
+            // Save new image to MongoDB
+            const savedImage = await saveImageToDB(req.file);
+            updateData.image = savedImage._id;
+            
+            // Delete old image if exists
+            const oldService = await Service.findById(req.params.id);
+            if (oldService.image) {
+                await Image.findByIdAndDelete(oldService.image);
             }
         }
+        
+        const updatedService = await Service.findByIdAndUpdate(
+            req.params.id,
+            updateData,
+            { new: true }
+        ).populate('image');
+        
+        if (!updatedService) {
+            return res.status(404).json({ error: 'Service not found' });
+        }
+
+        const serviceObj = updatedService.toObject();
+        if (updatedService.image) {
+            serviceObj.image = getImageUrl(updatedService.image._id);
+        }
+        
+        res.json({ 
+            message: 'Service updated successfully',
+            service: serviceObj
+        });
+    } catch (error) {
+        console.error('Service update error:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// Delete service (admin only)
+app.delete('/api/admin/services/:id', authenticateToken, requireAdmin, async (req, res) => {
+    try {
+        const service = await Service.findById(req.params.id);
+        if (!service) {
+            return res.status(404).json({ error: 'Service not found' });
+        }
+
+        // Delete associated image if exists
+        if (service.image) {
+            await Image.findByIdAndDelete(service.image);
+        }
+
+        await Service.findByIdAndDelete(req.params.id);
 
         res.json({ message: 'Service deleted successfully' });
     } catch (error) {
@@ -1089,11 +1285,108 @@ app.delete('/api/admin/services/:id', authenticateToken, requireAdmin, async (re
     }
 });
 
+// ==================== PORTFOLIO ROUTES ====================
+
+// Get portfolio items
+app.get('/api/portfolio', async (req, res) => {
+    try {
+        const { category, type } = req.query;
+        let query = {};
+        
+        if (category && category !== 'all') {
+            query.category = category;
+        }
+        
+        if (type) {
+            query.type = type;
+        }
+
+        const portfolioItems = await Portfolio.find(query)
+            .populate('image')
+            .sort({ createdAt: -1 });
+
+        const itemsWithUrls = portfolioItems.map(item => {
+            const itemObj = item.toObject();
+            if (item.image) {
+                itemObj.image = getImageUrl(item.image._id);
+            }
+            return itemObj;
+        });
+
+        res.json(itemsWithUrls);
+    } catch (error) {
+        console.error('Portfolio error:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// Add portfolio item (admin only)
+app.post('/api/admin/portfolio', authenticateToken, requireAdmin, upload.single('image'), async (req, res) => {
+    try {
+        const { title, description, category, type } = req.body;
+
+        if (!req.file) {
+            return res.status(400).json({ error: 'Image file is required' });
+        }
+
+        // Save image to MongoDB
+        const savedImage = await saveImageToDB(req.file);
+
+        const newPortfolioItem = await Portfolio.create({
+            title,
+            description,
+            category,
+            type: type || 'photo',
+            image: savedImage._id
+        });
+
+        res.status(201).json({ 
+            message: 'Portfolio item added successfully',
+            item: {
+                _id: newPortfolioItem._id,
+                title: newPortfolioItem.title,
+                description: newPortfolioItem.description,
+                category: newPortfolioItem.category,
+                type: newPortfolioItem.type,
+                image: getImageUrl(savedImage._id),
+                likes: newPortfolioItem.likes
+            }
+        });
+    } catch (error) {
+        console.error('Portfolio upload error:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// Delete portfolio item (admin only)
+app.delete('/api/admin/portfolio/:id', authenticateToken, requireAdmin, async (req, res) => {
+    try {
+        const portfolioItem = await Portfolio.findById(req.params.id);
+        if (!portfolioItem) {
+            return res.status(404).json({ error: 'Portfolio item not found' });
+        }
+
+        // Delete associated image
+        if (portfolioItem.image) {
+            await Image.findByIdAndDelete(portfolioItem.image);
+        }
+
+        await Portfolio.findByIdAndDelete(req.params.id);
+
+        res.json({ message: 'Portfolio item deleted successfully' });
+    } catch (error) {
+        console.error('Portfolio delete error:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// ==================== ERROR HANDLING ====================
+
 // Error handling middleware
 app.use((error, req, res, next) => {
     if (error instanceof multer.MulterError) {
         if (error.code === 'LIMIT_FILE_SIZE') {
-            return res.status(400).json({ error: 'File too large. Maximum size is 5MB.' });
+            return res.status(400).json({ error: 'File too large. Maximum size is 10MB.' });
         }
     }
     
@@ -1106,14 +1399,22 @@ app.use((req, res) => {
     res.status(404).json({ error: 'Endpoint not found' });
 });
 
+// ==================== START SERVER ====================
+
 // Initialize server
 const startServer = async () => {
     await initializeData();
     
     app.listen(PORT, '0.0.0.0', () => {
-        console.log(`Server is running on port ${PORT}`);
-        console.log(`Admin credentials: a@gmail.com / 12345`);
-        console.log('Environment:', process.env.NODE_ENV || 'development');
+        console.log('='.repeat(60));
+        console.log('🚀 CAPTURE MOMENTS PHOTOGRAPHY - MONGODB COMPLETE SOLUTION');
+        console.log('='.repeat(60));
+        console.log(`✅ Server running on port: ${PORT}`);
+        console.log(`💾 All files stored in MongoDB Atlas (Permanent Storage)`);
+        console.log(`🖼️ Images, photos, files survive server restarts`);
+        console.log(`📊 Database: ${MONGODB_URI.split('@')[1]}`);
+        console.log(`👑 Admin: a@gmail.com / 12345`);
+        console.log('='.repeat(60));
     });
 };
 
